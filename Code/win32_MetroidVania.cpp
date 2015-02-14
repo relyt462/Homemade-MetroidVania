@@ -14,11 +14,15 @@ Update Notes (2/13/15) : Added win32_WindowDimensions and win32_OffscreenBuffer,
 //Includes
 #include <windows.h>
 #include <stdint.h>
+#include <xinput.h>
+#include "win32_DeviceContext.h"
+
+
 
 //Typedefs
 typedef uint8_t uint8;
-typedef uint16_t uint16;
 typedef uint32_t uint32;
+typedef uint16_t uint16;
 typedef uint64_t uint64;
 typedef int8_t int8;
 typedef int16_t int16;
@@ -44,6 +48,35 @@ struct win32_OffscreenBuffer
 static bool running;			//Determines whether the window is currently running
 static win32_OffscreenBuffer backBuffer;
 
+
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+typedef X_INPUT_SET_STATE(x_input_set_state);
+X_INPUT_SET_STATE(xInputSetStateStub)
+{
+    return(0);
+}
+static x_input_set_state *XinputSetState = xInputSetStateStub;
+
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
+typedef X_INPUT_GET_STATE(x_input_get_state);
+X_INPUT_GET_STATE(xInputGetStateStub)
+{
+    return(0);
+}
+static x_input_get_state *XinputGetState = xInputGetStateStub;
+
+
+
+static void win32_LoadXInput()
+{
+    //Something here seems to be breaking
+    HMODULE XInputLibrary = LoadLibrary("xInput1_3.dll");
+    if(XInputLibrary)
+    {
+		XinputSetState = (x_input_set_state *)GetProcAddress(XInputLibrary, "XInputSetState");
+        XinputGetState = (x_input_get_state *)GetProcAddress(XInputLibrary, "XInputGetState");
+    }
+}
 
 /******************************************************************************
 FunctionName : WindowDimensions
@@ -192,6 +225,40 @@ LRESULT CALLBACK WindowProc(HWND Window,
 			//Exit the program
 			running = false;
 			break;
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        {
+            uint32 VKCode = wParam;
+            bool wasDown = (lParam & (1<<30)) != 0;
+            bool isDown = (lParam & (1<<31)) == 0;
+            if(VKCode == 'W')
+            {
+
+            }
+            else if(VKCode == 'A')
+            {
+
+            }
+            else if(VKCode == 'S')
+            {
+
+            }
+            else if(VKCode == 'D')
+            {
+
+            }
+            else if(VKCode == VK_SPACE)
+            {
+
+            }
+            else if(VKCode == VK_ESCAPE)
+            {
+
+            }
+
+        }break;
 		//Window sent message to close
 		case WM_CLOSE:
 			//Exit the program
@@ -243,16 +310,9 @@ WinMain(HINSTANCE Instance,
 		LPSTR CmdLine,
 		int ShowCode)
 {
-/*
-  WNDPROC   lpfnWndProc = MAINWINDOWCALLBACK;
-  HINSTANCE hInstance;
-//Todo(Set icon)
-  HICON	 hIcon;
-  LPCTSTR   lpszClassName;
-*/
 	//Create the Window Class
     WNDCLASS WindowClass = {CS_HREDRAW|CS_VREDRAW,WindowProc,0,0,Instance,0,0,0,0,"MetroidVaniaWindowClass"};
-
+    win32_LoadXInput();
     //Reserve memory for backBuffer
     ResizeDIBSection(&backBuffer,1200,800);
 
@@ -294,19 +354,53 @@ WinMain(HINSTANCE Instance,
 					DispatchMessage(&message);
 				}//end if
 
+                for(DWORD user = 0; user < XUSER_MAX_COUNT; user++)
+                {
+                    XINPUT_STATE state;
+
+                    //Causing Crash Why?
+                    if(XinputGetState(user, &state) == ERROR_SUCCESS)
+                    {
+                        XINPUT_GAMEPAD * gamePad = &state.Gamepad;
+                        bool DPadUp = (gamePad->wButtons & XINPUT_GAMEPAD_DPAD_UP);
+                        bool DPadLeft = (gamePad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
+                        bool DPadDown = (gamePad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
+                        bool DPadRight = (gamePad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
+                        bool start = (gamePad->wButtons & XINPUT_GAMEPAD_START);
+                        bool back = (gamePad->wButtons & XINPUT_GAMEPAD_BACK);
+                        bool aButton = (gamePad->wButtons & XINPUT_GAMEPAD_A);
+                        bool bButton = (gamePad->wButtons & XINPUT_GAMEPAD_B);
+                        bool xButton = (gamePad->wButtons & XINPUT_GAMEPAD_X);
+                        bool yButton = (gamePad->wButtons & XINPUT_GAMEPAD_Y);
+                        bool leftShoulder = (gamePad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
+                        bool rightShoulder = (gamePad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
+
+                        int16 stickX = gamePad->sThumbLX;
+                        int16 stickY = gamePad->sThumbLY;
+
+                        if(aButton)
+                        {
+                            yOffset++;
+                        }
+                    }
+                    else
+                    {
+                        //Controller not available
+                    }
+                }
                 //Render the gradient
 				RenderGradient(&backBuffer, xOffset, yOffset);
-				HDC deviceContext = GetDC(WindowHandle);
+			    win32_DeviceContext Context(WindowHandle);
 
                 win32_WindowDimensions Dimensions = WindowDimensions(WindowHandle);
 
                 //Update the window
-				Win32_UpdateGameWindow(deviceContext,backBuffer,Dimensions.width, Dimensions.height);
+				Win32_UpdateGameWindow(Context.getCurrentContext(),backBuffer,Dimensions.width, Dimensions.height);
 
-				ReleaseDC(WindowHandle, deviceContext);
-				//Update xOffset and yOffset
+
+                //Update xOffset and yOffset
                 xOffset++;
-				yOffset++;
+				//yOffset++;
 			}//end Message loop
 		}//end if
 		else
