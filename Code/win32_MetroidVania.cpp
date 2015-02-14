@@ -5,6 +5,12 @@ FileName : win32_MetroidVania.cpp
 Purpose: Contains main functionality and interface with windows api for project
 *****************************************************************************/
 
+/*****************************************************************************
+Update Notes (2/13/15) : Added win32_WindowDimensions and win32_OffscreenBuffer,
+ general cleanup of code, extracted ethods uses Buffer struct instead of having
+ all the components as individual global variables
+*****************************************************************************/
+
 //Includes
 #include <windows.h>
 #include <stdint.h>
@@ -19,33 +25,75 @@ typedef int16_t int16;
 typedef int32_t int32;
 typedef int64_t int64;
 
+struct win32_WindowDimensions
+{
+    int width;
+    int height;
+};
+
+struct win32_OffscreenBuffer
+{
+    BITMAPINFO Info;  //Stores info about the bitmap storing graphics
+    void *  Memory;		    //Points the bitmap in memory
+    int     Width;
+    int     Height;
+    int     Pitch;
+};
 
 //Global variables
 static bool running;			//Determines whether the window is currently running
-static BITMAPINFO bitMapInfo;   //Stores info about the bitmap storing graphics
-static void * bitMapMem;		//Points the bitmap in memory
-static int bitMapWidth;
-static int bitMapHeight;
+static win32_OffscreenBuffer backBuffer;
 
 
-static void RenderGradient(int XOffset, int YOffset)
+/******************************************************************************
+FunctionName : WindowDimensions
+                            Date Created: 2/13/15   Date Edited: 2/13/15
+                            Creator: Tyler Whittin  Edited by: Tyler Whittin
+Purpose: Gets the windows width and height
+@param : HWND window            - Window to obtain dimensions of
+@param : win32_WindowDimensions - Struct containing window width and height
+******************************************************************************/
+static win32_WindowDimensions WindowDimensions(HWND window)
 {
-	int pitch = bitMapWidth * 4;
-	uint8 * Row = (uint8 * )bitMapMem;
-	for(int y = 0; y < bitMapHeight; y++)
+    win32_WindowDimensions Dimensions;
+    RECT WindowRect;
+    GetClientRect(window,&WindowRect );
+
+
+    Dimensions.width = WindowRect.right - WindowRect.left;
+    Dimensions.height = WindowRect.bottom - WindowRect.top;
+
+    return(Dimensions);
+}
+
+
+
+/******************************************************************************
+FunctionName : RenderGradient
+                            Date Created: 2/13/15   Date Edited: 2/13/15
+                            Creator: Tyler Whittin  Edited by: Tyler Whittin
+Purpose: Renders a blue->green gradient based on window coordinate
+@param : win32_OffscreenBuffer Buffer - Backbuffer to update
+@param : int blueOffset	              - Offset for the blue part of the gradient
+@param : int greenOffset              - Offset for the green part of the gradient
+******************************************************************************/
+static void RenderGradient(const win32_OffscreenBuffer *Buffer,int blueOffset, int greenOffset)
+{
+	uint8 * Row = (uint8 * )Buffer->Memory;
+	for(int y = 0; y < Buffer->Height; y++)
 	{
 		uint32 * Pixel = (uint32 * )Row;
-		for(int x = 0; x < bitMapWidth; x++)
+		for(int x = 0; x < Buffer->Width; x++)
 		{
-			uint8 blue = (uint8)(x + XOffset);
-			uint8 green = (uint8)(y + YOffset);
+			uint8 blue = (uint8)(x + blueOffset);
+			uint8 green = (uint8)(y + greenOffset);
 			uint8 red = 0;
 			*Pixel++ =((green << 8) | blue);
 
-		}
-		Row += pitch;
-	}
-}
+		}//end for
+		Row += Buffer->Pitch;
+	}//end for
+}//end RenderGradient
 
 
 
@@ -53,26 +101,21 @@ static void RenderGradient(int XOffset, int YOffset)
 FunctionName : Win32_UpdateGameWindow
 							Date Created: 2/13/15   Date Edited: 2/13/15
 							Creator: Tyler Whittin  Edited by: Tyler Whittin
-Purpose: Updates the game window based on the bitmap in bitMapMem
-@param : HDC DeviceContext - The context of the device to update
-@param : int x			   - Position of the left part of the screen to update
-@param : int y			   - Position of the top part of the screen to update
-@param : int width		   - Width of the rectangle to update
-@param : int height		   - Height of the rectangle to update
+Purpose: Updates the game window based on the bitmap in the passed buffer
+@param : HDC DeviceContext  - The context of the device to update
+@param : win32_OffscreenBuffer Buffer
+                            - The buffer information to use when updating
+@param : int WindowWidth    - Width of the rectangle to update
+@param : int WindowHeight   - Height of the rectangle to update
 ******************************************************************************/
-static void Win32_UpdateGameWindow( HDC DeviceContext,const RECT * WindowRect,int x,int y,int width,int height)
+static void Win32_UpdateGameWindow( HDC DeviceContext,win32_OffscreenBuffer Buffer,int WindowWidth,int WindowHeight)
 {
-	int windowWidth = WindowRect->right - WindowRect->left;
-	int windowHeight = WindowRect->bottom - WindowRect->top;
 	//Copy bitmap from bitMapMem to current DeviceContext, stretching bitmap to match size of the device's output
 	StretchDIBits(DeviceContext,
-				 /*x,y,width,height,  //Destination rectangle
-				 x,y,width,height,  //Target Rectangle
-				 */
-				 0,0, bitMapWidth, bitMapHeight,
-				 0,0, windowWidth, windowHeight,
-				 bitMapMem,
-				 &bitMapInfo,
+				 0,0, WindowWidth, WindowHeight,
+                 0,0, Buffer.Width, Buffer.Height,
+				 Buffer.Memory,
+				 &(Buffer.Info),
 				 DIB_RGB_COLORS,	//Using full RGB per bit
 				 SRCCOPY);		  //Copy from source to destingation
 }
@@ -82,40 +125,39 @@ static void Win32_UpdateGameWindow( HDC DeviceContext,const RECT * WindowRect,in
 /******************************************************************************
 FunctionName : ResizeDIBSection   Date Created: 2/13/15   Date Edited: 2/13/15
 								Creator: Tyler Whittin  Edited by: Tyler Whittin
-Purpose: Set up bitMapInfo and reallocate bitMapMem when window resized
-@param : HWND	Window    - Handle of calling window
-@param : UINT	Message   - Message being sent
-@param : WPARAM  wParam   - Additional info dependent on Message
-@param : LPARAM  lParam   - Additional info dependent on Message
-@return: LRESULT CALLBACK - Result of message processing
+Purpose: Sets up buffer to work for new window size after resize
+@param : win32_OffscreenBuffer Buffer - The buffer to be resized
+@param : int Width                    - The width of the new screensize
+@param : int height                   - The height of the new screensize
 ******************************************************************************/
-static void ResizeDIBSection(int Width, int Height)
+static void ResizeDIBSection(win32_OffscreenBuffer *Buffer, int Width, int Height)
 {
-
-	if(bitMapMem)
+    //If memory has been allocated before
+	if(Buffer->Memory)
 	{
-		VirtualFree(bitMapMem, 0, MEM_RELEASE);
+		VirtualFree(Buffer->Memory, 0, MEM_RELEASE);
 	}
 
-	bitMapWidth = Width;
-	bitMapHeight = Height;
+    //Set the width and the height of the buffer
+	Buffer->Width = Width;
+	Buffer->Height = Height;
 
 	//Create BITMAPINFO struct, all values not initialized set to 0
-	bitMapInfo.bmiHeader.biSize = sizeof(bitMapInfo.bmiHeader);
-	bitMapInfo.bmiHeader.biWidth = bitMapWidth;
-	bitMapInfo.bmiHeader.biHeight = -bitMapHeight;
-	bitMapInfo.bmiHeader.biPlanes = 1;
-	bitMapInfo.bmiHeader.biBitCount = 32;
-	bitMapInfo.bmiHeader.biCompression = BI_RGB;
+	Buffer->Info.bmiHeader.biSize = sizeof(Buffer->Info.bmiHeader);
+    Buffer->Info.bmiHeader.biWidth = Buffer->Width;
+    Buffer->Info.bmiHeader.biHeight = -Buffer->Height;
+    Buffer->Info.bmiHeader.biPlanes = 1;
+    Buffer->Info.bmiHeader.biBitCount = 32;
+    Buffer->Info.bmiHeader.biCompression = BI_RGB;
 
 
 	//Allocate new memory of size(pixelSize * width * height)
-	bitMapMem = VirtualAlloc(NULL,			  //Don't care about location
-							4 * bitMapWidth * bitMapHeight,
+    Buffer->Memory = VirtualAlloc(NULL,			  //Don't care about location
+							4 * Buffer->Width * Buffer->Height,
 												//Want 4 * width * height allocated
 							MEM_COMMIT,		 //Want immediate access
 							PAGE_READWRITE);	//Only need to read/write
-
+    Buffer->Pitch = Width * 4;
 }
 
 
@@ -143,28 +185,17 @@ LRESULT CALLBACK WindowProc(HWND Window,
 		//Window changes size
 		case WM_SIZE:
 		{
-			//Get the new RECT to draw
-			RECT clientRect;
-			GetClientRect(Window,&clientRect );
-			int height = clientRect.bottom - clientRect.top;
-			int width = clientRect.right - clientRect.left;
 
-			//Resize the DIB section
-			ResizeDIBSection(width, height);
-			OutputDebugString("WM_SIZE\n");
-			break;
-		}
+		}break;
 		//Window Destroyed by ending process
 		case WM_DESTROY:
 			//Exit the program
 			running = false;
-			OutputDebugString("WM_DESTROY\n");
 			break;
 		//Window sent message to close
 		case WM_CLOSE:
 			//Exit the program
 			running = false;
-			OutputDebugString("WM_CLOSE\n");
 			break;
 		//Window activated
 		case WM_ACTIVATEAPP:
@@ -177,19 +208,12 @@ LRESULT CALLBACK WindowProc(HWND Window,
 				//Bind paint to the current window
 				HDC contxt = BeginPaint(Window, &paint);
 
-				int x = paint.rcPaint.left;
-				int y = paint.rcPaint.top;
-				int height = paint.rcPaint.bottom - paint.rcPaint.top;
-				int width = paint.rcPaint.right - paint.rcPaint.left;
+                //Update the window
+                win32_WindowDimensions Dimensions = WindowDimensions(Window);
 
-				//Update the window
-				RECT clientRect;
-				GetClientRect(Window,&clientRect );
-
-				Win32_UpdateGameWindow(contxt,&clientRect, x,y,width,height);
+				Win32_UpdateGameWindow(contxt, backBuffer,Dimensions.width, Dimensions.height);
 
 				EndPaint(Window, &paint);
-				OutputDebugString("WM_PAINT\n");
 			}break;
 		//For all messages not explicitly handled use default windows handlers
 		default:
@@ -227,9 +251,13 @@ WinMain(HINSTANCE Instance,
   LPCTSTR   lpszClassName;
 */
 	//Create the Window Class
-  WNDCLASS WindowClass = {0,WindowProc,0,0,Instance,0,0,0,0,"MetroidVaniaWindowClass"};
-	//If registration of Window Class is successfull
-	if(RegisterClass(&WindowClass))
+    WNDCLASS WindowClass = {CS_HREDRAW|CS_VREDRAW,WindowProc,0,0,Instance,0,0,0,0,"MetroidVaniaWindowClass"};
+
+    //Reserve memory for backBuffer
+    ResizeDIBSection(&backBuffer,1200,800);
+
+    //If registration of Window Class is successfull
+    if(RegisterClass(&WindowClass))
 	{
 		//Create the window
 		HWND WindowHandle = CreateWindowEx(0,
@@ -248,32 +276,36 @@ WinMain(HINSTANCE Instance,
 		if(WindowHandle)
 		{
 			running = true;
-			int xOffset = 0;
+
+
+            int xOffset = 0;
 			int yOffset = 0;
 			//Message loop
-			MSG message;
 			while(running)
 			{
-				while(PeekMessage(&message, 0,0,0,PM_REMOVE))
+                MSG message;
+
+				//Handle all messages in the queue
+                while(PeekMessage(&message, 0,0,0,PM_REMOVE))
 				{
 					if(message.message == WM_QUIT) {running = false;}
 
 					TranslateMessage(&message);
 					DispatchMessage(&message);
 				}//end if
-				RenderGradient(xOffset, yOffset);
+
+                //Render the gradient
+				RenderGradient(&backBuffer, xOffset, yOffset);
 				HDC deviceContext = GetDC(WindowHandle);
-				RECT WindowRect;
-				GetClientRect(WindowHandle,&WindowRect );
 
+                win32_WindowDimensions Dimensions = WindowDimensions(WindowHandle);
 
-				int windowWidth = WindowRect.right - WindowRect.left;
-				int windowHeight = WindowRect.bottom - WindowRect.top;
-
-				Win32_UpdateGameWindow(deviceContext,&WindowRect,0,0,windowWidth,windowHeight);
+                //Update the window
+				Win32_UpdateGameWindow(deviceContext,backBuffer,Dimensions.width, Dimensions.height);
 
 				ReleaseDC(WindowHandle, deviceContext);
-				xOffset++;
+				//Update xOffset and yOffset
+                xOffset++;
 				yOffset++;
 			}//end Message loop
 		}//end if
@@ -281,10 +313,10 @@ WinMain(HINSTANCE Instance,
 		{
 			//Todo log error
 		}//end else
-  }//end if
-  else
-  {
-	  //Todo log register failure
-  }//end else
+    }//end if
+    else
+    {
+	       //Todo log register failure
+    }//end else
   return (0);
 }
